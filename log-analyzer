@@ -1,0 +1,168 @@
+#!/usr/bin/env perl
+#
+# clustering log messages by textual similarity, editing distance.
+# (c) Jan Jaeger 2014, 2015, 2016, 2017
+#
+
+
+use Text::Fuzzy;
+use List::Util qw(min max);
+use Term::ReadKey qw(GetTerminalSize);
+use File::Copy;
+
+$compress= 10;
+
+sub low_pass {
+    (@ar)= @_;
+    my @ar_low, $prev, $next;
+    for (my $i=0; $i<=100; ++$i) {
+        $prev3= max(0, $ar[$i-3]);
+        $prev2= max(0, $ar[$i-2]);
+        $prev1= max(0, $ar[$i-1]);
+        $next1= min(100, $ar[$i+1]);
+        $next2= min(100, $ar[$i+2]);
+        $next3= min(100, $ar[$i+3]);
+        $ar_low[$i]= int(($prev3 + $prev2 + $prev1 + $ar[$i] + $next1 + $next2 + $next3) / 7 + 0.5);
+    }
+    return @ar_low;
+}
+
+sub print_star_graph {
+    (@ar)= @_;
+
+    my %term;
+    ($term{cols}, $term{lines})= GetTerminalSize();
+    print "LINES: $term{lines}\n";
+    print "COLUMNS: $term{cols}\n\n";
+
+    print "# of x values: ", 0+@ar, "\n\n";
+    print "last x value: ", $#ar, "\n\n";
+
+    my @ar_stars, $occurrence, $n, $max_n, $max_occurrence;
+    for (my $i=0; $i<=100; ++$i) {
+        $occurrence= $ar[$i];
+        #$n= int($occurrence / $compress + 0.5);
+        $n= min(30, int($occurrence / $compress + 0.5));
+        $max_n= max($max_n, $n);
+        $max_occurrence= max($max_occurrence, $occurrence);
+    }
+
+    for (my $i=0; $i<=100; ++$i) {
+        $occurrence= $ar[$i];
+        $n= min(30, int($occurrence / $compress + 0.5));
+        my @row;
+        for (my $x= 0; $x<=$max_n; ++$x) {
+            #print "x:$x, n:$n\n";
+            if ($x<=$n) {
+                $row[$x]='*';
+                #print "*";
+            }
+            else {
+                $row[$x]=' ';
+                #print " ";
+            }
+        }
+        #print "\n";
+        #print join(',', @row);
+        push(@ar_stars, \@row);
+    }
+
+    print "Occurrence:\n";
+
+    for (my $y=$max_n; $y>=0; --$y) {
+        $occurrence= int($max_occurrence / $max_n * $y + 0.5);
+        print "$occurrence\t\t";
+        for (my $x=0; $x<=100; ++$x) {
+            print $ar_stars[$x][$y];
+        }
+        print "\n"
+    }
+    print "Likeness%:\t01234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890\n";
+    print "         \t          10        20        30        40        50        60        70        80        90         \n";
+
+}
+
+
+($fname)= @ARGV;
+
+my $linenum;
+if ( ! -f "$fname.d/S" ) {
+    # initialize working dir
+    mkdir ("$fname.d");
+    copy($fname, "$fname.d/F");
+    $linenum=1;
+    open (SEQ, '>', "$fname.d/S");
+    print SEQ $linenum;
+    close (SEQ);
+} else {
+    # pick up processing in working dir
+    open (SEQ, "$fname.d/S");
+    $linenum= <SEQ>;
+    chomp ($linenum);
+    close (SEQ);
+}
+
+#print "linenum: $linenum\n";
+#++$linenum;
+#print "linenum: $linenum\n";
+#exit;
+
+while (TRUE) {
+    open (OUTFILE, '>', "$fname.d/$linenum");
+    open (REST, '>', "$fname.d/R");
+    open(INFILE, "$fname.d/F") or die("Could not open file.");
+
+    my $first_line= <INFILE>;
+    last unless defined $first_line;
+    #seek (INFILE, 0, 0);
+    print OUTFILE $first_line;
+    my $len_first= length($first_line);
+
+    my $tf = Text::Fuzzy->new ($first_line);
+
+    print "Test against:\n$first_line\n";
+
+    my $length=0, $len_line=0, $lev_dist=0, $likeness, $s_likeness, $likeness_pcnt, $count_dot80=0;
+    my @ar_like;
+
+    while( my $line = <INFILE>)  {   
+        #print "        $line";
+        $len_line= length($line);
+        #$length= int(($len_first + $len_line) / 2 + 0.5);
+        $length= max($len_first, $len_line);
+        $lev_dist= $tf->distance ($line);
+
+        $likeness= ($length - $lev_dist) / $length;
+        $likeness_pcnt= int($likeness * 100 + 0.5);
+        $s_likeness= sprintf ("'%.4f'", $likeness);
+        if (($likeness > 0.7) && ($likeness <= 1)) {
+            print "$s_likeness - $line";
+            # write line to filename + line number
+            print OUTFILE "$s_likeness - $line";
+            ++$count_dot80;
+        } else {
+            print REST $line;
+        }
+        $ar_like[$likeness_pcnt]+= 1;
+
+        #print "Distance is ", $tf->distance ($line), "\n";
+        #print "Likeness is ", $likeness_pcnt, "\n";
+        #print "$line\n";
+        #sleep 1;
+    }
+    print "matches: $count_dot80\n";
+    print_star_graph(low_pass(@ar_like));
+    #print_star_graph(@ar_like);
+
+    close (OUTFILE);
+    close (REST);
+
+    move("$fname.d/R", "$fname.d/F");
+    ++$linenum;
+    #FIXME: race condition
+    open (SEQ, '>', "$fname.d/S");
+    print SEQ $linenum;
+    close (SEQ);
+}
+
+exit 0
